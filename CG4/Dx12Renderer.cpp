@@ -32,14 +32,12 @@ static ComPtr<ID3D12Resource> CreateDefaultBuffer(
         nullptr,
         IID_PPV_ARGS(&uploadBuffer)));
 
-    // CPU → upload-heap
     void* mapped = nullptr;
     D3D12_RANGE range{0, 0};
     ThrowIfFailed(uploadBuffer->Map(0, &range, &mapped));
     memcpy(mapped, initData, byteSize);
     uploadBuffer->Unmap(0, nullptr);
 
-    // копирование из upload-буфера в default-буфер
     auto b0 = Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->ResourceBarrier(1, &b0);
     cmdList->CopyBufferRegion(defaultBuffer.Get(), 0, uploadBuffer.Get(), 0, byteSize);
@@ -58,515 +56,456 @@ Dx12Renderer::~Dx12Renderer()
         CloseHandle(mFenceEvent);
 }
 
-bool Dx12Renderer::Initialize(HWND hwnd, int width, int height)
+void Dx12Renderer::Initialize(HWND hwnd, int width, int height, const Settings& settings)
 {
     mHwnd = hwnd;
     mWidth = width;
     mHeight = height;
+    mSettings = settings;
 
+    InitDevice();
+
+    ThrowIfFailed(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCmdAlloc)));
+    ThrowIfFailed(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCmdAlloc.Get(), nullptr, IID_PPV_ARGS(&mCmdList)));
+    ThrowIfFailed(mCmdList->Close());
+
+    ThrowIfFailed(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)));
+    mFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    CreateSwapChain();
+    CreateDescriptorHeaps();
+    CreateRenderTargets();
+    CreateDepthBuffer();
+
+    BuildRootSignature();
+    BuildShadersAndPSO();
+    BuildCubeGeometry();
+
+    mSceneCB = std::make_unique<UploadBuffer<SceneCB>>(mDevice.Get(), 1, true);
+
+    D3D12_DESCRIPTOR_HEAP_DESC cbvDesc{};
+    cbvDesc.NumDescriptors = 1;
+    cbvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    cbvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ThrowIfFailed(mDevice->CreateDescriptorHeap(&cbvDesc, IID_PPV_ARGS(&mCbvHeap)));
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{};
+    cbv.BufferLocation = mSceneCB->Resource()->GetGPUVirtualAddress();
+    cbv.SizeInBytes = Align256(sizeof(SceneCB));
+    mDevice->CreateConstantBufferView(&cbv, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    Resize(width, height);
+}
+
+void Dx12Renderer::InitDevice()
+{
 #if defined(_DEBUG)
     {
-        ComPtr<ID3D12Debug> debug;
-        if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-            debug->EnableDebugLayer();
+        ComPtr<ID3D12Debug> dbg;
+        if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg))))
+            dbg->EnableDebugLayer();
     }
 #endif
 
-    ThrowIfFailed(CreateDXGIFactory2(0, IID_PPV_ARGS(&mFactory)));
+    ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&mFactory)));
 
-    ComPtr<IDXGIAdapter1> adapter;
-    for(UINT i = 0; mFactory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
-    {
-        DXGI_ADAPTER_DESC1 desc{};
-        adapter->GetDesc1(&desc);
-
-        if(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-            continue;
-
-        if(SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&mDevice))))
-            break;
-    }
-
-    if(!mDevice)
+    HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&mDevice));
+    if(FAILED(hr))
     {
         ComPtr<IDXGIAdapter> warp;
         ThrowIfFailed(mFactory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
         ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&mDevice)));
     }
 
-    // очередь команд
-    D3D12_COMMAND_QUEUE_DESC qdesc{};
-    qdesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    qdesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    ThrowIfFailed(mDevice->CreateCommandQueue(&qdesc, IID_PPV_ARGS(&mCmdQueue)));
+    D3D12_COMMAND_QUEUE_DESC q{};
+    q.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    q.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    ThrowIfFailed(mDevice->CreateCommandQueue(&q, IID_PPV_ARGS(&mQueue)));
 
-    // список команд
-    ThrowIfFailed(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCmdAlloc)));
-    ThrowIfFailed(mDevice->CreateCommandList(
-        0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCmdAlloc.Get(), nullptr, IID_PPV_ARGS(&mCmdList)));
-    ThrowIfFailed(mCmdList->Close());
-
-    // Fence
-    ThrowIfFailed(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)));
-    mFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-    // SwapChain
-    DXGI_SWAP_CHAIN_DESC1 sd{};
-    sd.Width = mWidth;
-    sd.Height = mHeight;
-    sd.Format = mBackBufferFormat;
-    sd.SampleDesc.Count = 1;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.BufferCount = SwapChainBufferCount;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
-    // удаляем полноэкранный режим
-    ThrowIfFailed(mFactory->MakeWindowAssociation(mHwnd, DXGI_MWA_NO_ALT_ENTER));
-
-    ComPtr<IDXGISwapChain1> swap1;
-    ThrowIfFailed(mFactory->CreateSwapChainForHwnd(
-        mCmdQueue.Get(),
-        mHwnd,
-        &sd,
-        nullptr,
-        nullptr,
-        &swap1));
-
-    ThrowIfFailed(swap1.As(&mSwapChain));
-    mCurrBackBuffer = 0;
-
-    // RTV-heap: цветовые цели
-    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
-    rtvHeapDesc.NumDescriptors = SwapChainBufferCount;
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    ThrowIfFailed(mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRtvHeap)));
-
-    // DSV-heap: дескриптор для буфера глубины
-    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
-    dsvHeapDesc.NumDescriptors = 1;
-    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    ThrowIfFailed(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDsvHeap)));
-
-    // heap для CBV: под константный буфер
-    D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc{};
-    cbvHeapDesc.NumDescriptors = 1;
-    cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ThrowIfFailed(mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap)));
-
-    mRtvDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    mDsvDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-    mCbvDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    BuildRootSignature();
-    BuildShadersAndInputLayout();
-    BuildGeometry();
-    BuildPSO();
-
-    OnResize(mWidth, mHeight);
-
-    return true;
+    mRtvInc = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    mDsvInc = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    mCbvInc = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
-void Dx12Renderer::OnResize(int width, int height)
+void Dx12Renderer::CreateSwapChain()
 {
-    mWidth = width;
-    mHeight = height;
+    DXGI_SWAP_CHAIN_DESC1 sd{};
+    sd.BufferCount = mSettings.swapChainBufferCount;
+    sd.Width = mWidth;
+    sd.Height = mHeight;
+    sd.Format = mSettings.backBufferFormat;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    sd.SampleDesc.Count = 1;
 
-    if(!mDevice || !mSwapChain)
-        return;
+    ComPtr<IDXGISwapChain1> sc1;
+    ThrowIfFailed(mFactory->CreateSwapChainForHwnd(
+        mQueue.Get(), mHwnd, &sd, nullptr, nullptr, &sc1));
 
-    Flush();
+    ThrowIfFailed(sc1.As(&mSwapChain));
+    mFrameIndex = mSwapChain->GetCurrentBackBufferIndex();
 
-    // учитываем размера окна
-    for(int i = 0; i < SwapChainBufferCount; ++i)
-        mSwapChainBuffer[i].Reset();
-    mDepthStencilBuffer.Reset();
+    mFactory->MakeWindowAssociation(mHwnd, DXGI_MWA_NO_ALT_ENTER);
+}
 
-    ThrowIfFailed(mSwapChain->ResizeBuffers(
-        SwapChainBufferCount,
-        mWidth,
-        mHeight,
-        mBackBufferFormat,
-        DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
+void Dx12Renderer::CreateDescriptorHeaps()
+{
+    D3D12_DESCRIPTOR_HEAP_DESC rtv{};
+    rtv.NumDescriptors = mSettings.swapChainBufferCount;
+    rtv.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ThrowIfFailed(mDevice->CreateDescriptorHeap(&rtv, IID_PPV_ARGS(&mRtvHeap)));
 
-    mCurrBackBuffer = 0;
 
-    // пересоздаём RTV для всех back buffer-ов
-    auto rtvHandle = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for(UINT i = 0; i < SwapChainBufferCount; ++i)
+    D3D12_DESCRIPTOR_HEAP_DESC dsv{};
+    dsv.NumDescriptors = 1;
+    dsv.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsv.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ThrowIfFailed(mDevice->CreateDescriptorHeap(&dsv, IID_PPV_ARGS(&mDsvHeap)));
+}
+
+void Dx12Renderer::CreateRenderTargets()
+{
+    mBackBuffers.resize(mSettings.swapChainBufferCount);
+
+    auto handle = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for(int i = 0; i < mSettings.swapChainBufferCount; ++i)
     {
-        ThrowIfFailed(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&mSwapChainBuffer[i])));
-        mDevice->CreateRenderTargetView(mSwapChainBuffer[i].Get(), nullptr, rtvHandle);
-        rtvHandle.ptr += mRtvDescriptorSize;
+        ThrowIfFailed(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&mBackBuffers[i])));
+        mDevice->CreateRenderTargetView(mBackBuffers[i].Get(), nullptr, handle);
+        handle.ptr += mRtvInc;
     }
+}
 
-    // depth-stencil
+void Dx12Renderer::CreateDepthBuffer()
+{
+    D3D12_RESOURCE_DESC d{};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    d.Alignment = 0;
+    d.Width = mWidth;
+    d.Height = mHeight;
+    d.DepthOrArraySize = 1;
+    d.MipLevels = 1;
+    d.Format = mSettings.depthFormat;
+    d.SampleDesc.Count = 1;
+    d.SampleDesc.Quality = 0;
+    d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE clear{};
+    clear.Format = mSettings.depthFormat;
+    clear.DepthStencil.Depth = 1.0f;
+    clear.DepthStencil.Stencil = 0;
+
     auto depthHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-    auto depthDesc = Tex2DDesc(
-        mDepthStencilFormat,
-        mWidth,
-        mHeight,
-        1, 1,
-        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-
-    D3D12_CLEAR_VALUE optClear{};
-    optClear.Format = mDepthStencilFormat;
-    optClear.DepthStencil.Depth = 1.0f;
-    optClear.DepthStencil.Stencil = 0;
-
     ThrowIfFailed(mDevice->CreateCommittedResource(
         &depthHeap,
         D3D12_HEAP_FLAG_NONE,
-        &depthDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        &optClear,
-        IID_PPV_ARGS(&mDepthStencilBuffer)));
+        &d,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &clear,
+        IID_PPV_ARGS(&mDepth)));
 
-    // DSV
-    mDevice->CreateDepthStencilView(mDepthStencilBuffer.Get(), nullptr, mDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
+    dsv.Format = mSettings.depthFormat;
+    dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsv.Flags = D3D12_DSV_FLAG_NONE;
 
-    // throw для depth буфера
-    ThrowIfFailed(mCmdAlloc->Reset());
-    ThrowIfFailed(mCmdList->Reset(mCmdAlloc.Get(), nullptr));
+    mDevice->CreateDepthStencilView(mDepth.Get(), &dsv, mDsvHeap->GetCPUDescriptorHandleForHeapStart());
+}
 
-    auto b = Transition(mDepthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    mCmdList->ResourceBarrier(1, &b);
+void Dx12Renderer::Resize(int width, int height)
+{
+    if(!mDevice) return;
 
-    ThrowIfFailed(mCmdList->Close());
-    ID3D12CommandList* lists[] = { mCmdList.Get() };
-    mCmdQueue->ExecuteCommandLists(1, lists);
+    mWidth = std::max(1, width);
+    mHeight = std::max(1, height);
 
     Flush();
 
-    // viewport и scissor-область для окна
-    mViewport.TopLeftX = 0.0f;
-    mViewport.TopLeftY = 0.0f;
-    mViewport.Width = static_cast<float>(mWidth);
-    mViewport.Height = static_cast<float>(mHeight);
-    mViewport.MinDepth = 0.0f;
-    mViewport.MaxDepth = 1.0f;
+    for(auto& bb : mBackBuffers) bb.Reset();
+    mDepth.Reset();
 
-    mScissorRect = {0, 0, mWidth, mHeight};
+    ThrowIfFailed(mSwapChain->ResizeBuffers(
+        mSettings.swapChainBufferCount,
+        mWidth,
+        mHeight,
+        mSettings.backBufferFormat,
+        0));
 
-    BuildConstantBuffer();
+    mFrameIndex = mSwapChain->GetCurrentBackBufferIndex();
+
+    CreateRenderTargets();
+    CreateDepthBuffer();
+
+    mViewport = {0.0f, 0.0f, static_cast<float>(mWidth), static_cast<float>(mHeight), 0.0f, 1.0f};
+    mScissor = {0, 0, mWidth, mHeight};
 }
 
-void Dx12Renderer::Update(float dt)
+void Dx12Renderer::BuildRootSignature()
 {
-    mTheta += dt * 0.5f;
+    D3D12_ROOT_PARAMETER param{};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    param.Descriptor.ShaderRegister = 0;
+    param.Descriptor.RegisterSpace = 0;
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // камера
-    XMVECTOR pos = XMVectorSet(
-        mRadius * sinf(mPhi) * cosf(mTheta),
-        mRadius * cosf(mPhi),
-        mRadius * sinf(mPhi) * sinf(mTheta),
-        1.0f);
+    D3D12_ROOT_SIGNATURE_DESC desc{};
+    desc.NumParameters = 1;
+    desc.pParameters = &param;
+    desc.NumStaticSamplers = 0;
+    desc.pStaticSamplers = nullptr;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    XMVECTOR target = XMVectorZero();
+    ComPtr<ID3DBlob> sig;
+    ComPtr<ID3DBlob> err;
+    HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if(FAILED(hr))
+    {
+        std::string msg = err ? std::string((const char*)err->GetBufferPointer(), err->GetBufferSize()) : "Root signature error";
+        throw std::runtime_error(msg);
+    }
+
+    ThrowIfFailed(mDevice->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&mRootSig)));
+}
+
+void Dx12Renderer::BuildShadersAndPSO()
+{
+    UINT flags = 0;
+#if defined(_DEBUG)
+    flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ComPtr<ID3DBlob> errors;
+    ThrowIfFailed(D3DCompileFromFile(L"Phong.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        "VSMain", "vs_5_0", flags, 0, &mVS, &errors));
+
+    errors.Reset();
+    ThrowIfFailed(D3DCompileFromFile(L"Phong.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        "PSMain", "ps_5_0", flags, 0, &mPS, &errors));
+
+    D3D12_INPUT_ELEMENT_DESC layout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = mRootSig.Get();
+    pso.VS = {mVS->GetBufferPointer(), mVS->GetBufferSize()};
+    pso.PS = {mPS->GetBufferPointer(), mPS->GetBufferSize()};
+    D3D12_BLEND_DESC blend{};
+    blend.AlphaToCoverageEnable = FALSE;
+    blend.IndependentBlendEnable = FALSE;
+    blend.RenderTarget[0].BlendEnable = FALSE;
+    blend.RenderTarget[0].LogicOpEnable = FALSE;
+    blend.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    blend.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+    blend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blend.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_RASTERIZER_DESC rast{};
+    rast.FillMode = D3D12_FILL_MODE_SOLID;
+    rast.CullMode = D3D12_CULL_MODE_BACK;
+    rast.FrontCounterClockwise = FALSE;
+    rast.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    rast.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    rast.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    rast.DepthClipEnable = TRUE;
+    rast.MultisampleEnable = FALSE;
+    rast.AntialiasedLineEnable = FALSE;
+    rast.ForcedSampleCount = 0;
+    rast.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    D3D12_DEPTH_STENCIL_DESC ds{};
+    ds.DepthEnable = TRUE;
+    ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    ds.StencilEnable = TRUE;
+    ds.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    ds.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    D3D12_DEPTH_STENCILOP_DESC sop{};
+    sop.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    sop.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    sop.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    sop.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    ds.FrontFace = sop;
+    ds.BackFace = sop;
+
+    pso.BlendState = blend;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState = rast;
+    pso.DepthStencilState = ds;
+    pso.InputLayout = {layout, _countof(layout)};
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = mSettings.backBufferFormat;
+    pso.DSVFormat = mSettings.depthFormat;
+    pso.SampleDesc.Count = 1;
+
+    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&mPSO)));
+}
+
+void Dx12Renderer::BuildCubeGeometry()
+{
+
+    const float s = 1.0f;
+    std::vector<Vertex> v = {
+        // +X
+        {{ s,-s,-s},{ 1,0,0}}, {{ s, s,-s},{ 1,0,0}}, {{ s, s, s},{ 1,0,0}}, {{ s,-s, s},{ 1,0,0}},
+        // -X
+        {{-s,-s, s},{-1,0,0}}, {{-s, s, s},{-1,0,0}}, {{-s, s,-s},{-1,0,0}}, {{-s,-s,-s},{-1,0,0}},
+        // +Y
+        {{-s, s,-s},{0, 1,0}}, {{-s, s, s},{0, 1,0}}, {{ s, s, s},{0, 1,0}}, {{ s, s,-s},{0, 1,0}},
+        // -Y
+        {{-s,-s, s},{0,-1,0}}, {{-s,-s,-s},{0,-1,0}}, {{ s,-s,-s},{0,-1,0}}, {{ s,-s, s},{0,-1,0}},
+        // +Z
+        {{-s,-s, s},{0,0, 1}}, {{ s,-s, s},{0,0, 1}}, {{ s, s, s},{0,0, 1}}, {{-s, s, s},{0,0, 1}},
+        // -Z
+        {{ s,-s,-s},{0,0,-1}}, {{-s,-s,-s},{0,0,-1}}, {{-s, s,-s},{0,0,-1}}, {{ s, s,-s},{0,0,-1}},
+    };
+
+    std::vector<uint16_t> i;
+    i.reserve(36);
+    for(uint16_t face = 0; face < 6; ++face)
+    {
+        uint16_t base = face * 4;
+        i.push_back(base + 0); i.push_back(base + 1); i.push_back(base + 2);
+        i.push_back(base + 0); i.push_back(base + 2); i.push_back(base + 3);
+    }
+
+    mIndexCount = static_cast<UINT>(i.size());
+
+    ThrowIfFailed(mCmdAlloc->Reset());
+    ThrowIfFailed(mCmdList->Reset(mCmdAlloc.Get(), nullptr));
+
+    mVB = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), v.data(), sizeof(Vertex) * v.size(), mVBUpload);
+    mIB = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), i.data(), sizeof(uint16_t) * i.size(), mIBUpload);
+
+    ThrowIfFailed(mCmdList->Close());
+    ID3D12CommandList* lists[] = {mCmdList.Get()};
+    mQueue->ExecuteCommandLists(1, lists);
+    Flush();
+
+    mVBV.BufferLocation = mVB->GetGPUVirtualAddress();
+    mVBV.StrideInBytes = sizeof(Vertex);
+    mVBV.SizeInBytes = static_cast<UINT>(sizeof(Vertex) * v.size());
+
+    mIBV.BufferLocation = mIB->GetGPUVirtualAddress();
+    mIBV.Format = DXGI_FORMAT_R16_UINT;
+    mIBV.SizeInBytes = static_cast<UINT>(sizeof(uint16_t) * i.size());
+}
+
+void Dx12Renderer::Update(float dt, float totalTime)
+{
+    (void)dt;
+
+
+    float x = mRadius * sinf(mPhi) * cosf(mTheta);
+    float z = mRadius * sinf(mPhi) * sinf(mTheta);
+    float y = mRadius * cosf(mPhi);
+
+    XMVECTOR eye = XMVectorSet(x, y, z, 1.0f);
+    XMVECTOR at = XMVectorZero();
     XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+    XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, (float)mWidth / (float)mHeight, 0.1f, 1000.0f);
 
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, AspectRatio(), 0.1f, 100.0f);
+    XMMATRIX world = XMMatrixRotationY(0.6f * totalTime) * XMMatrixRotationX(0.25f * totalTime);
 
-    XMMATRIX world = XMMatrixIdentity();
-    XMMATRIX wvp = world * view * proj;
+    SceneCB cb{};
+    XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&cb.viewProj, XMMatrixTranspose(view * proj));
 
-    // матрицы + свет
-    ObjectConstants obj{};
-    XMStoreFloat4x4(&obj.WorldViewProj, XMMatrixTranspose(wvp));
+    cb.eyePos = XMFLOAT3(x, y, z);
+    cb.lightDir = XMFLOAT3(0.577f, -0.577f, 0.577f);
+    cb.lightColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
 
-    obj.LightDir = XMFLOAT3(0.577f, -0.577f, 0.577f);
-    obj.LightColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
-    obj.Ambient = XMFLOAT3(0.2f, 0.2f, 0.2f);
-
-    mObjectCB->CopyData(0, obj);
+    mSceneCB->CopyData(0, cb);
 }
 
-void Dx12Renderer::Draw()
+void Dx12Renderer::Render(float r, float g, float b)
 {
     ThrowIfFailed(mCmdAlloc->Reset());
     ThrowIfFailed(mCmdList->Reset(mCmdAlloc.Get(), mPSO.Get()));
 
     mCmdList->RSSetViewports(1, &mViewport);
-    mCmdList->RSSetScissorRects(1, &mScissorRect);
+    mCmdList->RSSetScissorRects(1, &mScissor);
 
-    // Переводим текущий back buffer в состояние "цель рендеринга".
-    auto toRT = Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    mCmdList->ResourceBarrier(1, &toRT);
+ 
+    auto barrier = Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCmdList->ResourceBarrier(1, &barrier);
 
-    
-    auto rtv = CurrentBackBufferView();
-    auto dsv = DepthStencilView();
+    const float clearColor[] = {r, g, b, 1.0f};
+    mCmdList->ClearRenderTargetView(CurrentRTV(), clearColor, 0, nullptr);
+    mCmdList->ClearDepthStencilView(DSV(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-
+    auto rtv = CurrentRTV();
+    auto dsv = DSV();
     mCmdList->OMSetRenderTargets(1, &rtv, TRUE, &dsv);
 
-    const float clearColor[] = { mClearColor.x, mClearColor.y, mClearColor.z, 1.0f };
-    mCmdList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    mCmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-    mCmdList->SetGraphicsRootSignature(mRootSignature.Get());
+    ID3D12DescriptorHeap* heaps[] = {mCbvHeap.Get()};
+    mCmdList->SetDescriptorHeaps(1, heaps);
 
-    ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get() };
-    mCmdList->SetDescriptorHeaps(_countof(heaps), heaps);
+    mCmdList->SetGraphicsRootSignature(mRootSig.Get());
+ 
+    mCmdList->SetGraphicsRootConstantBufferView(0, mSceneCB->Resource()->GetGPUVirtualAddress());
 
     mCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCmdList->IASetVertexBuffers(0, 1, &mVBView);
-    mCmdList->IASetIndexBuffer(&mIBView);
+    mCmdList->IASetVertexBuffers(0, 1, &mVBV);
+    mCmdList->IASetIndexBuffer(&mIBV);
 
-    // отрисовка куба
-    // устанавливаем GPU-адрес константного буфера
-    mCmdList->SetGraphicsRootConstantBufferView(0, mObjectCB->Resource()->GetGPUVirtualAddress());
     mCmdList->DrawIndexedInstanced(mIndexCount, 1, 0, 0, 0);
 
-    // возвращаем back buffer в состояние показа на экран 
-    auto toPresent = Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-    mCmdList->ResourceBarrier(1, &toPresent);
+
+    barrier = Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    mCmdList->ResourceBarrier(1, &barrier);
 
     ThrowIfFailed(mCmdList->Close());
-    ID3D12CommandList* lists[] = { mCmdList.Get() };
-    mCmdQueue->ExecuteCommandLists(1, lists);
+    ID3D12CommandList* lists[] = {mCmdList.Get()};
+    mQueue->ExecuteCommandLists(1, lists);
 
     ThrowIfFailed(mSwapChain->Present(1, 0));
-    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
 
-
-    Flush();
-}
-
-void Dx12Renderer::OnMouseDown(WPARAM btnState, int x, int y)
-{
-    mLastMousePos.x = x;
-    mLastMousePos.y = y;
-
-    SetCapture(mHwnd);
-}
-
-void Dx12Renderer::OnMouseUp(WPARAM btnState, int x, int y)
-{
-    ReleaseCapture();
-}
-
-void Dx12Renderer::OnMouseMove(WPARAM btnState, int x, int y)
-{
-    if((btnState & MK_LBUTTON) != 0)
-    {
-        float dx = XMConvertToRadians(0.25f * static_cast<float>(x - mLastMousePos.x));
-        float dy = XMConvertToRadians(0.25f * static_cast<float>(y - mLastMousePos.y));
-
-        mTheta += dx;
-        mPhi += dy;
-
-        mPhi = std::clamp(mPhi, 0.1f, XM_PI - 0.1f);
-    }
-    else if((btnState & MK_RBUTTON) != 0)
-    {
-        float dx = 0.2f * static_cast<float>(x - mLastMousePos.x);
-        float dy = 0.2f * static_cast<float>(y - mLastMousePos.y);
-
-        mRadius += dx - dy;
-        mRadius = std::clamp(mRadius, 2.0f, 50.0f);
-    }
-
-    mLastMousePos.x = x;
-    mLastMousePos.y = y;
-}
-
-float Dx12Renderer::AspectRatio() const
-{
-    return static_cast<float>(mWidth) / static_cast<float>(mHeight);
+    MoveToNextFrame();
 }
 
 ID3D12Resource* Dx12Renderer::CurrentBackBuffer() const
 {
-    return mSwapChainBuffer[mCurrBackBuffer].Get();
+    return mBackBuffers[mFrameIndex].Get();
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE Dx12Renderer::CurrentBackBufferView() const
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12Renderer::CurrentRTV() const
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += mCurrBackBuffer * mRtvDescriptorSize;
+    auto h = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += static_cast<SIZE_T>(mFrameIndex) * mRtvInc;
     return h;
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE Dx12Renderer::DepthStencilView() const
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12Renderer::DSV() const
 {
     return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
 void Dx12Renderer::Flush()
 {
-    mCurrentFence++;
+    const UINT64 fenceToWaitFor = ++mFenceValue;
+    ThrowIfFailed(mQueue->Signal(mFence.Get(), fenceToWaitFor));
 
-    ThrowIfFailed(mCmdQueue->Signal(mFence.Get(), mCurrentFence));
-
-    if(mFence->GetCompletedValue() < mCurrentFence)
+    if(mFence->GetCompletedValue() < fenceToWaitFor)
     {
-        ThrowIfFailed(mFence->SetEventOnCompletion(mCurrentFence, mFenceEvent));
+        ThrowIfFailed(mFence->SetEventOnCompletion(fenceToWaitFor, mFenceEvent));
         WaitForSingleObject(mFenceEvent, INFINITE);
     }
 }
 
-void Dx12Renderer::BuildConstantBuffer()
+void Dx12Renderer::MoveToNextFrame()
 {
-    // выделяем константный буфер под один объект
-    mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(mDevice.Get(), 1, true);
-
-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
-    cbvDesc.BufferLocation = mObjectCB->Resource()->GetGPUVirtualAddress();
-    cbvDesc.SizeInBytes = Align256(sizeof(ObjectConstants));
-
-    auto cpuHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-    mDevice->CreateConstantBufferView(&cbvDesc, cpuHandle);
-}
-
-void Dx12Renderer::BuildRootSignature()
-{
-    // RootSignature: один параметр — CBV 
-    D3D12_ROOT_PARAMETER slotRootParameter[1]{};
-    slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    slotRootParameter[0].Descriptor.ShaderRegister = 0;
-    slotRootParameter[0].Descriptor.RegisterSpace = 0;
-    slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC rootSigDesc{};
-    rootSigDesc.NumParameters = 1;
-    rootSigDesc.pParameters = slotRootParameter;
-    rootSigDesc.NumStaticSamplers = 0;
-    rootSigDesc.pStaticSamplers = nullptr;
-    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    ComPtr<ID3DBlob> serializedRootSig = nullptr;
-    ComPtr<ID3DBlob> errorBlob = nullptr;
-    ThrowIfFailed(D3D12SerializeRootSignature(
-        &rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-        serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf()));
-
-    ThrowIfFailed(mDevice->CreateRootSignature(
-        0,
-        serializedRootSig->GetBufferPointer(),
-        serializedRootSig->GetBufferSize(),
-        IID_PPV_ARGS(&mRootSignature)));
-}
-
-void Dx12Renderer::BuildShadersAndInputLayout()
-{
-    mVS = CompileShader(L"Phong.hlsl", nullptr, "VSMain", "vs_5_1");
-    mPS = CompileShader(L"Phong.hlsl", nullptr, "PSMain", "ps_5_1");
-
-    mInputLayout =
-    {
-        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    };
-}
-
-void Dx12Renderer::BuildGeometry()
-{
-    // 24 вершины для нормалей
-    Vertex vertices[] =
-    {
-        // Грань X
-        {{+0.5f, -0.5f, -0.5f}, {+1.0f, 0.0f, 0.0f}},
-        {{+0.5f, +0.5f, -0.5f}, {+1.0f, 0.0f, 0.0f}},
-        {{+0.5f, +0.5f, +0.5f}, {+1.0f, 0.0f, 0.0f}},
-        {{+0.5f, -0.5f, +0.5f}, {+1.0f, 0.0f, 0.0f}},
-
-        // Грань -X
-        {{-0.5f, -0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}},
-        {{-0.5f, +0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}},
-        {{-0.5f, +0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}},
-        {{-0.5f, -0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}},
-
-        // Грань Y
-        {{-0.5f, +0.5f, -0.5f}, {0.0f, +1.0f, 0.0f}},
-        {{-0.5f, +0.5f, +0.5f}, {0.0f, +1.0f, 0.0f}},
-        {{+0.5f, +0.5f, +0.5f}, {0.0f, +1.0f, 0.0f}},
-        {{+0.5f, +0.5f, -0.5f}, {0.0f, +1.0f, 0.0f}},
-
-        // Грань -Y
-        {{-0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}},
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}},
-        {{+0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}},
-        {{+0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}},
-
-        // Грань Z
-        {{+0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, +1.0f}},
-        {{+0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, +1.0f}},
-        {{-0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, +1.0f}},
-        {{-0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, +1.0f}},
-
-        // Грань -Z
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}},
-        {{-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}},
-        {{+0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}},
-        {{+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}},
-    };
-
-    std::uint16_t indices[] =
-    {
-        0, 1, 2, 0, 2, 3,
-        4, 5, 6, 4, 6, 7,
-        8, 9,10, 8,10,11,
-       12,13,14,12,14,15,
-       16,17,18,16,18,19,
-       20,21,22,20,22,23
-    };
-    mIndexCount = static_cast<UINT>(_countof(indices));
-
-    const UINT vbByteSize = static_cast<UINT>(sizeof(vertices));
-    const UINT ibByteSize = static_cast<UINT>(sizeof(indices));
-
-    ThrowIfFailed(mCmdAlloc->Reset());
-    ThrowIfFailed(mCmdList->Reset(mCmdAlloc.Get(), nullptr));
-
-    ComPtr<ID3D12Resource> vbUpload, ibUpload;
-    mVertexBuffer = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), vertices, vbByteSize, vbUpload);
-    mIndexBuffer  = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), indices,  ibByteSize, ibUpload);
-
-    ThrowIfFailed(mCmdList->Close());
-    ID3D12CommandList* lists[] = { mCmdList.Get() };
-    mCmdQueue->ExecuteCommandLists(1, lists);
-
     Flush();
-
-    mVBView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
-    mVBView.StrideInBytes = sizeof(Vertex);
-    mVBView.SizeInBytes = vbByteSize;
-
-    mIBView.BufferLocation = mIndexBuffer->GetGPUVirtualAddress();
-    mIBView.Format = DXGI_FORMAT_R16_UINT;
-    mIBView.SizeInBytes = ibByteSize;
-}
-
-void Dx12Renderer::BuildPSO()
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
-    psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
-    psoDesc.pRootSignature = mRootSignature.Get();
-    psoDesc.VS =
-    {
-        reinterpret_cast<BYTE*>(mVS->GetBufferPointer()),
-        mVS->GetBufferSize()
-    };
-    psoDesc.PS =
-    {
-        reinterpret_cast<BYTE*>(mPS->GetBufferPointer()),
-        mPS->GetBufferSize()
-    };
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mBackBufferFormat;
-    psoDesc.DSVFormat = mDepthStencilFormat;
-    psoDesc.SampleDesc.Count = 1;
-
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
+    mFrameIndex = mSwapChain->GetCurrentBackBufferIndex();
 }
