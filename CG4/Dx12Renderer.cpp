@@ -1,6 +1,43 @@
 #include "Dx12Renderer.h"
 
+#include <algorithm>
+#include <cfloat>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+
 using namespace DirectX;
+
+//поиск ассета
+static std::wstring FindAssetPath(const std::wstring& relative)
+{
+    namespace fs = std::filesystem;
+
+    auto exists = [](const fs::path& p) {
+        std::error_code ec;
+        return fs::exists(p, ec) && fs::is_regular_file(p, ec);
+    };
+
+    fs::path rel(relative);
+
+    fs::path p1 = fs::current_path() / rel;
+    if(exists(p1))
+        return p1.wstring();
+
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    fs::path exeDir = fs::path(exePath).parent_path();
+    fs::path p2 = exeDir / rel;
+    if(exists(p2))
+        return p2.wstring();
+
+    fs::path p3 = exeDir / L".." / L".." / rel;
+    if(exists(p3))
+        return fs::weakly_canonical(p3).wstring();
+
+    return relative;
+}
 
 static ComPtr<ID3D12Resource> CreateDefaultBuffer(
     ID3D12Device* device,
@@ -79,7 +116,7 @@ void Dx12Renderer::Initialize(HWND hwnd, int width, int height, const Settings& 
 
     BuildRootSignature();
     BuildShadersAndPSO();
-    BuildCubeGeometry();
+    BuildSponzaGeometry();
 
     mSceneCB = std::make_unique<UploadBuffer<SceneCB>>(mDevice.Get(), 1, true);
 
@@ -95,6 +132,236 @@ void Dx12Renderer::Initialize(HWND hwnd, int width, int height, const Settings& 
     mDevice->CreateConstantBufferView(&cbv, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
 
     Resize(width, height);
+}
+
+bool Dx12Renderer::LoadObjSimple(const std::wstring& path,
+    std::vector<Vertex>& outVertices,
+    std::vector<uint32_t>& outIndices,
+    XMFLOAT3& outMin,
+    XMFLOAT3& outMax)
+{
+    namespace fs = std::filesystem;
+
+    std::ifstream file(path);
+    if(!file.is_open())
+        return false;
+
+    std::vector<XMFLOAT3> positions;
+    std::vector<XMFLOAT3> normals;
+
+    positions.reserve(100000);
+    normals.reserve(100000);
+
+    outVertices.clear();
+    outIndices.clear();
+    outVertices.reserve(200000);
+    outIndices.reserve(400000);
+
+    outMin = XMFLOAT3(+FLT_MAX, +FLT_MAX, +FLT_MAX);
+    outMax = XMFLOAT3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+
+    struct Key
+    {
+        int v = 0;
+        int n = 0;
+        bool operator==(const Key& o) const noexcept { return v == o.v && n == o.n; }
+    };
+
+    struct KeyHash
+    {
+        size_t operator()(const Key& k) const noexcept
+        {
+            return (static_cast<size_t>(k.v) * 73856093u) ^ (static_cast<size_t>(k.n) * 19349663u);
+        }
+    };
+
+    std::unordered_map<Key, uint32_t, KeyHash> remap;
+    remap.reserve(200000);
+
+    auto fixIndex = [](int idx, int count) -> int {
+        if(idx > 0) return idx - 1;
+        if(idx < 0) return count + idx;
+        return -1;
+    };
+
+    auto parseFaceVertex = [](const std::string& token, int& outV, int& outN)
+    {
+        outV = 0;
+        outN = 0;
+
+        int v = 0, vt = 0, vn = 0;
+
+        size_t s1 = token.find('/');
+        if(s1 == std::string::npos)
+        {
+            v = std::stoi(token);
+        }
+        else
+        {
+            std::string a = token.substr(0, s1);
+            v = a.empty() ? 0 : std::stoi(a);
+
+            size_t s2 = token.find('/', s1 + 1);
+            if(s2 == std::string::npos)
+            {
+                std::string b = token.substr(s1 + 1);
+                vt = b.empty() ? 0 : std::stoi(b);
+            }
+            else
+            {
+                std::string b = token.substr(s1 + 1, s2 - (s1 + 1));
+                std::string c = token.substr(s2 + 1);
+                vt = b.empty() ? 0 : std::stoi(b);
+                vn = c.empty() ? 0 : std::stoi(c);
+            }
+        }
+
+        outV = v;
+        outN = vn;
+        (void)vt;
+    };
+
+    std::string line;
+    while(std::getline(file, line))
+    {
+        if(line.empty())
+            continue;
+
+
+        if(line[0] == '#')
+            continue;
+
+        std::istringstream iss(line);
+        std::string tag;
+        iss >> tag;
+
+        if(tag == "v")
+        {
+            XMFLOAT3 p{};
+            iss >> p.x >> p.y >> p.z;
+            positions.push_back(p);
+        }
+        else if(tag == "vn")
+        {
+            XMFLOAT3 n{};
+            iss >> n.x >> n.y >> n.z;
+            normals.push_back(n);
+        }
+        else if(tag == "f")
+        {
+            std::vector<std::string> tokens;
+            tokens.reserve(8);
+
+            std::string tok;
+            while(iss >> tok)
+                tokens.push_back(tok);
+
+            if(tokens.size() < 3)
+                continue;
+
+            auto emit = [&](const std::string& t) -> uint32_t
+            {
+                int vRaw = 0, nRaw = 0;
+                parseFaceVertex(t, vRaw, nRaw);
+
+                int vi = fixIndex(vRaw, (int)positions.size());
+                int ni = fixIndex(nRaw, (int)normals.size());
+
+                if(vi < 0 || vi >= (int)positions.size())
+                    return 0;
+
+                Key key{vi, ni};
+                auto it = remap.find(key);
+                if(it != remap.end())
+                    return it->second;
+
+                Vertex vx{};
+                vx.pos = positions[vi];
+                if(ni >= 0 && ni < (int)normals.size())
+                    vx.normal = normals[ni];
+                else
+                    vx.normal = XMFLOAT3(0, 1, 0);
+
+                outMin.x = std::min(outMin.x, vx.pos.x);
+                outMin.y = std::min(outMin.y, vx.pos.y);
+                outMin.z = std::min(outMin.z, vx.pos.z);
+                outMax.x = std::max(outMax.x, vx.pos.x);
+                outMax.y = std::max(outMax.y, vx.pos.y);
+                outMax.z = std::max(outMax.z, vx.pos.z);
+
+                uint32_t newIndex = (uint32_t)outVertices.size();
+                outVertices.push_back(vx);
+                remap.emplace(key, newIndex);
+                return newIndex;
+            };
+
+            for(size_t k = 1; k + 1 < tokens.size(); ++k)
+            {
+                uint32_t i0 = emit(tokens[0]);
+                uint32_t i1 = emit(tokens[k]);
+                uint32_t i2 = emit(tokens[k + 1]);
+                outIndices.push_back(i0);
+                outIndices.push_back(i1);
+                outIndices.push_back(i2);
+            }
+        }
+    }
+
+    return !outVertices.empty() && !outIndices.empty();
+}
+
+void Dx12Renderer::BuildSponzaGeometry()
+{
+    const std::wstring rel = L"Assets\\sponza.obj";
+    const std::wstring objPath = FindAssetPath(rel);
+
+    std::vector<Vertex> verts;
+    std::vector<uint32_t> inds;
+    XMFLOAT3 bmin{}, bmax{};
+
+    if(!LoadObjSimple(objPath, verts, inds, bmin, bmax))
+    {
+        OutputDebugStringW(L"[CG] Sponza OBJ не найден. Используется куб (fallback).\n");
+        BuildCubeGeometry();
+        return;
+    }
+
+    XMFLOAT3 center{ (bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f, (bmin.z + bmax.z) * 0.5f };
+    XMFLOAT3 ext{ (bmax.x - bmin.x), (bmax.y - bmin.y), (bmax.z - bmin.z) };
+    float maxExtent = std::max(ext.x, std::max(ext.y, ext.z));
+    float inv = (maxExtent > 0.00001f) ? (1.0f / maxExtent) : 1.0f;
+    float scale = inv * 50.0f; 
+
+    for(auto& v : verts)
+    {
+        v.pos.x = (v.pos.x - center.x) * scale;
+        v.pos.y = (v.pos.y - center.y) * scale;
+        v.pos.z = (v.pos.z - center.z) * scale;
+    }
+
+    mIndexCount = (UINT)inds.size();
+
+    ThrowIfFailed(mCmdAlloc->Reset());
+    ThrowIfFailed(mCmdList->Reset(mCmdAlloc.Get(), nullptr));
+
+    mVB = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), verts.data(), sizeof(Vertex) * verts.size(), mVBUpload);
+    mIB = CreateDefaultBuffer(mDevice.Get(), mCmdList.Get(), inds.data(), sizeof(uint32_t) * inds.size(), mIBUpload);
+
+    ThrowIfFailed(mCmdList->Close());
+    ID3D12CommandList* lists[] = { mCmdList.Get() };
+    mQueue->ExecuteCommandLists(1, lists);
+    Flush();
+
+    mVBV.BufferLocation = mVB->GetGPUVirtualAddress();
+    mVBV.StrideInBytes = sizeof(Vertex);
+    mVBV.SizeInBytes = (UINT)(sizeof(Vertex) * verts.size());
+
+    mIBV.BufferLocation = mIB->GetGPUVirtualAddress();
+    mIBV.Format = DXGI_FORMAT_R32_UINT;
+    mIBV.SizeInBytes = (UINT)(sizeof(uint32_t) * inds.size());
+
+    OutputDebugStringW((L"[CG] Sponza загружена: verts=" + std::to_wstring(verts.size()) +
+        L" inds=" + std::to_wstring(inds.size()) + L"\n").c_str());
 }
 
 void Dx12Renderer::InitDevice()
@@ -415,7 +682,7 @@ void Dx12Renderer::Update(float dt, float totalTime)
     XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
     XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, (float)mWidth / (float)mHeight, 0.1f, 1000.0f);
 
-    XMMATRIX world = XMMatrixRotationY(0.6f * totalTime) * XMMatrixRotationX(0.25f * totalTime);
+    XMMATRIX world = XMMatrixIdentity();
 
     SceneCB cb{};
     XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
