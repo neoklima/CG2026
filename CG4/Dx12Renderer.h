@@ -39,6 +39,20 @@ private:
     void BuildShadersAndPSO();
     void BuildCubeGeometry();
 
+    void BuildSponzaGeometry();
+
+    struct Vertex
+        {
+            DirectX::XMFLOAT3 pos;
+            DirectX::XMFLOAT3 normal;
+        };
+
+    bool LoadObjSimple(const std::wstring& path,
+        std::vector<Vertex>& outVertices,
+        std::vector<uint32_t>& outIndices,
+        DirectX::XMFLOAT3& outMin,
+        DirectX::XMFLOAT3& outMax);
+
     void Flush();
     void MoveToNextFrame();
 
@@ -47,11 +61,7 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE DSV() const;
 
 private:
-    struct Vertex
-    {
-        DirectX::XMFLOAT3 pos;
-        DirectX::XMFLOAT3 normal;
-    };
+
 
     struct SceneCB
     {
