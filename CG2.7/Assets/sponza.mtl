@@ -1,0 +1,153 @@
+# Compact material library for the bundled Sponza OBJ.
+# Kd/Ks/Ns keep its subsets distinct; the renderer binds the shared Poly Haven
+# diffuse, DirectX normal, and displacement maps as one tessellation material.
+
+newmtl arch
+Kd 0.78 0.73 0.63
+Ks 0.18 0.18 0.18
+Ns 24
+map_Kd sponza_tiles.ppm
+
+newmtl bricks
+Kd 0.72 0.34 0.25
+Ks 0.10 0.08 0.07
+Ns 12
+map_Kd sponza_tiles.ppm
+
+newmtl ceiling
+Kd 0.82 0.79 0.70
+Ks 0.12 0.12 0.12
+Ns 18
+map_Kd sponza_tiles.ppm
+
+newmtl chain
+Kd 0.32 0.31 0.29
+Ks 0.75 0.75 0.72
+Ns 128
+map_Kd sponza_tiles.ppm
+
+newmtl column_a
+Kd 0.72 0.66 0.54
+Ks 0.25 0.23 0.20
+Ns 42
+map_Kd sponza_tiles.ppm
+
+newmtl column_b
+Kd 0.66 0.58 0.45
+Ks 0.22 0.20 0.17
+Ns 36
+map_Kd sponza_tiles.ppm
+
+newmtl column_c
+Kd 0.80 0.75 0.64
+Ks 0.30 0.28 0.24
+Ns 48
+map_Kd sponza_tiles.ppm
+
+newmtl details
+Kd 0.58 0.50 0.39
+Ks 0.32 0.29 0.25
+Ns 52
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_a
+Kd 0.64 0.16 0.13
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_c
+Kd 0.19 0.32 0.61
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_d
+Kd 0.73 0.57 0.17
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_e
+Kd 0.32 0.56 0.25
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_f
+Kd 0.54 0.24 0.55
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl fabric_g
+Kd 0.70 0.38 0.16
+Ks 0.06 0.06 0.06
+Ns 8
+map_Kd sponza_tiles.ppm
+
+newmtl flagpole
+Kd 0.28 0.27 0.24
+Ks 0.70 0.68 0.64
+Ns 112
+map_Kd sponza_tiles.ppm
+
+newmtl floor
+Kd 0.55 0.50 0.42
+Ks 0.16 0.15 0.13
+Ns 22
+map_Kd sponza_tiles.ppm
+
+newmtl leaf
+Kd 0.25 0.50 0.20
+Ks 0.08 0.10 0.07
+Ns 10
+map_Kd sponza_tiles.ppm
+
+newmtl Material__25
+Kd 0.62 0.57 0.48
+Ks 0.18 0.17 0.15
+Ns 28
+map_Kd sponza_tiles.ppm
+
+newmtl Material__298
+Kd 0.44 0.39 0.33
+Ks 0.30 0.28 0.24
+Ns 46
+map_Kd sponza_tiles.ppm
+
+newmtl Material__47
+Kd 0.76 0.69 0.57
+Ks 0.20 0.18 0.15
+Ns 32
+map_Kd sponza_tiles.ppm
+
+newmtl Material__57
+Kd 0.50 0.45 0.37
+Ks 0.22 0.20 0.17
+Ns 38
+map_Kd sponza_tiles.ppm
+
+newmtl roof
+Kd 0.48 0.25 0.18
+Ks 0.12 0.10 0.09
+Ns 16
+map_Kd sponza_tiles.ppm
+
+newmtl vase
+Kd 0.52 0.34 0.20
+Ks 0.42 0.36 0.28
+Ns 72
+map_Kd sponza_tiles.ppm
+
+newmtl vase_hanging
+Kd 0.45 0.27 0.16
+Ks 0.48 0.40 0.30
+Ns 80
+map_Kd sponza_tiles.ppm
+
+newmtl vase_round
+Kd 0.60 0.40 0.23
+Ks 0.46 0.39 0.30
+Ns 76
+map_Kd sponza_tiles.ppm
