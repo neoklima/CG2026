@@ -917,11 +917,12 @@ void RenderingSystem::BuildSponzaGeometry()
 
 void RenderingSystem::BuildMaterialResources()
 {
-    std::array<ImageData, 3> images;
-    const std::array<std::wstring, 3> paths = {
+    std::array<ImageData, 4> images;
+    const std::array<std::wstring, 4> paths = {
         FindAssetPath(L"Assets\\rock_01_diff_1k.jpg"),
         FindAssetPath(L"Assets\\rock_01_nor_dx_1k.jpg"),
-        FindAssetPath(L"Assets\\rock_01_disp_1k.png")
+        FindAssetPath(L"Assets\\rock_01_disp_1k.png"),
+        FindAssetPath(L"Assets\\sponza_tiles.ppm")
     };
 
     if(!LoadImage(paths[0], images[0]))
@@ -939,11 +940,17 @@ void RenderingSystem::BuildMaterialResources()
         OutputDebugStringW(L"[CG] Displacement map missing; using neutral height.\n");
         images[2] = MakeSolidTexture(128, 128, 128);
     }
+    if(!LoadImage(paths[3], images[3]))
+    {
+        OutputDebugStringW(L"[CG] Sponza tile texture missing; using checker fallback.\n");
+        images[3] = MakeFallbackTexture();
+    }
 
     for(Material& material : mMaterials)
-        material.textureIndex = 0;
+        material.textureIndex = 3;
+    mMaterials[mDrawSubsets[mRockSubsetIndex].materialIndex].textureIndex = 0;
 
-    mGBufferSrvOffset = static_cast<UINT>(images.size());
+    mGBufferSrvOffset = static_cast<UINT>(images.size()) + 2;
     mParticleSrvOffset = mGBufferSrvOffset + GBuffer::TargetCount + 1;
     mParticleUavOffset = mParticleSrvOffset + 2;
     mSceneColorSrvOffset = mParticleUavOffset + 2;
@@ -1027,6 +1034,17 @@ void RenderingSystem::BuildMaterialResources()
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv.Texture2D.MipLevels = 1;
         mDevice->CreateShaderResourceView(mTextures[textureIndex].Get(), &srv, srvHandle);
+        srvHandle.ptr += mSrvInc;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sharedMapSrv{};
+    sharedMapSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sharedMapSrv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sharedMapSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sharedMapSrv.Texture2D.MipLevels = 1;
+    for(UINT textureIndex = 1; textureIndex <= 2; ++textureIndex)
+    {
+        mDevice->CreateShaderResourceView(mTextures[textureIndex].Get(), &sharedMapSrv, srvHandle);
         srvHandle.ptr += mSrvInc;
     }
 
@@ -2004,7 +2022,8 @@ void RenderingSystem::UpdateVisibleObjects(const BoundingFrustum& worldFrustum)
 
 void RenderingSystem::UpdateObjectConstants(
     const XMMATRIX& viewProjection,
-    const XMFLOAT3& eyePosition)
+    const XMFLOAT3& eyePosition,
+    float totalTime)
 {
     for(uint32_t visibleSlot = 0;
         visibleSlot < static_cast<uint32_t>(mVisibleObjects.size());
@@ -2016,9 +2035,20 @@ void RenderingSystem::UpdateObjectConstants(
             &scene.world,
             XMMatrixTranspose(XMLoadFloat4x4(&mObjectWorlds[objectIndex])));
         XMStoreFloat4x4(&scene.viewProj, XMMatrixTranspose(viewProjection));
-        scene.textureOffset = XMFLOAT2(0.0f, 0.0f);
-        scene.textureTiling = XMFLOAT2(1.0f, 1.0f);
+        if(objectIndex == 0)
+        {
+            scene.textureOffset = XMFLOAT2(
+                totalTime * 0.08f,
+                totalTime * 0.035f);
+            scene.textureTiling = XMFLOAT2(2.0f, 2.0f);
+        }
+        else
+        {
+            scene.textureOffset = XMFLOAT2(0.0f, 0.0f);
+            scene.textureTiling = XMFLOAT2(1.0f, 1.0f);
+        }
         scene.eyePosition = eyePosition;
+        scene.colorizeTiles = objectIndex == 0 ? 1u : 0u;
         scene.enableNormalMapping = mNormalMappingEnabled ? 1u : 0u;
         scene.enableDisplacement = mDisplacementEnabled ? 1u : 0u;
         mSceneCB->CopyData(static_cast<int>(visibleSlot), scene);
@@ -2340,7 +2370,7 @@ void RenderingSystem::Update(float dt, float totalTime)
     const auto cullingEnd = std::chrono::steady_clock::now();
     mCullingMicroseconds = std::chrono::duration<float, std::micro>(
         cullingEnd - cullingStart).count();
-    UpdateObjectConstants(view * proj, mCameraPosition);
+    UpdateObjectConstants(view * proj, mCameraPosition, totalTime);
     UpdateParticleConstants(view, view * proj, dt);
     UpdateWindowTitle(totalTime);
 

@@ -5,7 +5,7 @@ cbuffer SceneCB : register(b0)
     float2 gTextureOffset;
     float2 gTextureTiling;
     float3 gEyePosition;
-    float  _scenePadding;
+    uint   gColorizeTiles;
     uint   gEnableNormalMapping;
     uint   gEnableDisplacement;
     float2 _togglePadding;
@@ -174,7 +174,21 @@ GBufferOutput PSGeometry(DSOut input)
 
     GBufferOutput output;
     const float specularStrength = max(gSpecular.r, max(gSpecular.g, gSpecular.b));
-    output.AlbedoSpecular = float4(texel.rgb * gDiffuse.rgb, specularStrength);
+    float3 albedo = texel.rgb * gDiffuse.rgb;
+    if(gColorizeTiles != 0)
+    {
+        const int2 tileCoord = int2(floor(input.TexCoord * 4.0f));
+        const uint2 tileBits = asuint(tileCoord);
+        uint hash = tileBits.x * 73856093u ^ tileBits.y * 19349663u;
+        hash ^= hash >> 13;
+        hash *= 1274126177u;
+        hash ^= hash >> 16;
+        const float3 tileColor = 0.25f + 0.75f *
+            float3(hash & 255u, (hash >> 8) & 255u, (hash >> 16) & 255u) / 255.0f;
+        const float tileShade = dot(texel.rgb, float3(0.299f, 0.587f, 0.114f));
+        albedo = tileColor * (0.45f + 0.55f * tileShade);
+    }
+    output.AlbedoSpecular = float4(albedo, specularStrength);
     output.NormalShininess = float4(normalWorld, saturate(gShininess / 256.0f));
     output.WorldPosition = float4(input.PosW, 1.0f);
     return output;

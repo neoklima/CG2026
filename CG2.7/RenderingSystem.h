@@ -123,7 +123,7 @@ private:
         DirectX::XMFLOAT2 textureOffset;
         DirectX::XMFLOAT2 textureTiling;
         DirectX::XMFLOAT3 eyePosition;
-        float padding = 0.0f;
+        uint32_t colorizeTiles = 0;
         uint32_t enableNormalMapping = 1;
         uint32_t enableDisplacement = 1;
         DirectX::XMFLOAT2 togglePadding = {0.0f, 0.0f};
@@ -216,7 +216,8 @@ private:
     void UpdateVisibleObjects(const DirectX::BoundingFrustum& worldFrustum);
     void UpdateObjectConstants(
         const DirectX::XMMATRIX& viewProjection,
-        const DirectX::XMFLOAT3& eyePosition);
+        const DirectX::XMFLOAT3& eyePosition,
+        float totalTime);
     void UpdateWindowTitle(float totalTime);
 
     bool LoadObjSimple(
