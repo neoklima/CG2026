@@ -80,6 +80,7 @@ LRESULT App::HandleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if(wParam == 'C') mRenderer.ToggleFrustumCulling();
             if(wParam == 'O') mRenderer.ToggleOctreeCulling();
             if(wParam == 'H') mRenderer.ToggleShadows();
+            if(wParam == 'L') mRenderer.ToggleLod();
             if(wParam == '1') mRenderer.SetPostEffect(RenderingSystem::PostEffect::None);
             if(wParam == '2') mRenderer.SetPostEffect(RenderingSystem::PostEffect::Vignette);
             if(wParam == '3') mRenderer.SetPostEffect(RenderingSystem::PostEffect::GaussianBlur);

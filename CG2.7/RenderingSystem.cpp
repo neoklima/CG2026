@@ -796,71 +796,81 @@ void RenderingSystem::BuildSponzaGeometry()
 
     mSponzaSubsetCount = static_cast<UINT>(mDrawSubsets.size());
 
-    constexpr uint32_t RockSlices = 12;
-    constexpr uint32_t RockStacks = 7;
-    const uint32_t rockVertexStart = static_cast<uint32_t>(verts.size());
-    const uint32_t rockIndexStart = static_cast<uint32_t>(inds.size());
+    constexpr std::array<uint32_t, RockLodCount> rockSlices = {12, 8, 6};
+    constexpr std::array<uint32_t, RockLodCount> rockStacks = {7, 5, 4};
+    std::array<DrawSubset, RockLodCount> rockSubsets{};
     XMFLOAT3 rockMin(+FLT_MAX, +FLT_MAX, +FLT_MAX);
     XMFLOAT3 rockMax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
 
-    for(uint32_t stack = 0; stack <= RockStacks; ++stack)
+    for(UINT lod = 0; lod < RockLodCount; ++lod)
     {
-        const float v = static_cast<float>(stack) / static_cast<float>(RockStacks);
-        const float phi = v * XM_PI;
-        for(uint32_t slice = 0; slice <= RockSlices; ++slice)
+        const uint32_t slices = rockSlices[lod];
+        const uint32_t stacks = rockStacks[lod];
+        const uint32_t rockVertexStart = static_cast<uint32_t>(verts.size());
+        const uint32_t rockIndexStart = static_cast<uint32_t>(inds.size());
+
+        for(uint32_t stack = 0; stack <= stacks; ++stack)
         {
-            const float u = static_cast<float>(slice) / static_cast<float>(RockSlices);
-            const float theta = u * XM_2PI;
-            const XMFLOAT3 direction(
-                sinf(phi) * cosf(theta),
-                cosf(phi),
-                sinf(phi) * sinf(theta));
-            const float radius = 1.0f +
-                0.18f * sinf(theta * 3.0f + phi * 2.0f) +
-                0.10f * sinf(theta * 5.0f - phi) +
-                0.07f * cosf(phi * 4.0f + theta);
-
-            Vertex vertex{};
-            vertex.pos = XMFLOAT3(
-                direction.x * radius,
-                direction.y * radius,
-                direction.z * radius);
-            vertex.normal = direction;
-            vertex.texCoord = XMFLOAT2(u, v);
-            vertex.tangent = XMFLOAT4(-sinf(theta), 0.0f, cosf(theta), 1.0f);
-            verts.push_back(vertex);
-
-            rockMin.x = std::min(rockMin.x, vertex.pos.x);
-            rockMin.y = std::min(rockMin.y, vertex.pos.y);
-            rockMin.z = std::min(rockMin.z, vertex.pos.z);
-            rockMax.x = std::max(rockMax.x, vertex.pos.x);
-            rockMax.y = std::max(rockMax.y, vertex.pos.y);
-            rockMax.z = std::max(rockMax.z, vertex.pos.z);
-        }
-    }
-
-    for(uint32_t stack = 0; stack < RockStacks; ++stack)
-    {
-        for(uint32_t slice = 0; slice < RockSlices; ++slice)
-        {
-            const uint32_t row = RockSlices + 1;
-            const uint32_t a = rockVertexStart + stack * row + slice;
-            const uint32_t b = a + row;
-            const uint32_t c = b + 1;
-            const uint32_t d = a + 1;
-            if(stack != 0)
+            const float v = static_cast<float>(stack) / static_cast<float>(stacks);
+            const float phi = v * XM_PI;
+            for(uint32_t slice = 0; slice <= slices; ++slice)
             {
-                inds.push_back(a);
-                inds.push_back(b);
-                inds.push_back(d);
-            }
-            if(stack + 1 != RockStacks)
-            {
-                inds.push_back(d);
-                inds.push_back(b);
-                inds.push_back(c);
+                const float u = static_cast<float>(slice) / static_cast<float>(slices);
+                const float theta = u * XM_2PI;
+                const XMFLOAT3 direction(
+                    sinf(phi) * cosf(theta),
+                    cosf(phi),
+                    sinf(phi) * sinf(theta));
+                const float radius = 1.0f +
+                    0.18f * sinf(theta * 3.0f + phi * 2.0f) +
+                    0.10f * sinf(theta * 5.0f - phi) +
+                    0.07f * cosf(phi * 4.0f + theta);
+
+                Vertex vertex{};
+                vertex.pos = XMFLOAT3(
+                    direction.x * radius,
+                    direction.y * radius,
+                    direction.z * radius);
+                vertex.normal = direction;
+                vertex.texCoord = XMFLOAT2(u, v);
+                vertex.tangent = XMFLOAT4(-sinf(theta), 0.0f, cosf(theta), 1.0f);
+                verts.push_back(vertex);
+
+                rockMin.x = std::min(rockMin.x, vertex.pos.x);
+                rockMin.y = std::min(rockMin.y, vertex.pos.y);
+                rockMin.z = std::min(rockMin.z, vertex.pos.z);
+                rockMax.x = std::max(rockMax.x, vertex.pos.x);
+                rockMax.y = std::max(rockMax.y, vertex.pos.y);
+                rockMax.z = std::max(rockMax.z, vertex.pos.z);
             }
         }
+
+        for(uint32_t stack = 0; stack < stacks; ++stack)
+        {
+            for(uint32_t slice = 0; slice < slices; ++slice)
+            {
+                const uint32_t row = slices + 1;
+                const uint32_t a = rockVertexStart + stack * row + slice;
+                const uint32_t b = a + row;
+                const uint32_t c = b + 1;
+                const uint32_t d = a + 1;
+                if(stack != 0)
+                {
+                    inds.push_back(a);
+                    inds.push_back(b);
+                    inds.push_back(d);
+                }
+                if(stack + 1 != stacks)
+                {
+                    inds.push_back(d);
+                    inds.push_back(b);
+                    inds.push_back(c);
+                }
+            }
+        }
+
+        rockSubsets[lod].indexStart = rockIndexStart;
+        rockSubsets[lod].indexCount = static_cast<UINT>(inds.size()) - rockIndexStart;
     }
 
     mRockLocalBounds = BoundingBox(
@@ -881,10 +891,11 @@ void RenderingSystem::BuildSponzaGeometry()
     const UINT rockMaterialIndex = static_cast<UINT>(mMaterials.size());
     mMaterials.push_back(rockMaterial);
     mRockSubsetIndex = static_cast<UINT>(mDrawSubsets.size());
-    mDrawSubsets.push_back({
-        rockIndexStart,
-        static_cast<UINT>(inds.size()) - rockIndexStart,
-        rockMaterialIndex});
+    for(DrawSubset& subset : rockSubsets)
+    {
+        subset.materialIndex = rockMaterialIndex;
+        mDrawSubsets.push_back(subset);
+    }
 
     CalculateTangents(verts, inds);
 
@@ -1904,6 +1915,8 @@ void RenderingSystem::BuildObjectScene()
     mVisibleObjects.resize(mObjectWorlds.size());
     for(uint32_t index = 0; index < static_cast<uint32_t>(mVisibleObjects.size()); ++index)
         mVisibleObjects[index] = index;
+    mObjectLods.assign(mObjectWorlds.size(), 0);
+    mVisibleRockLodCounts.fill(0);
 
     mOctree.Build(mObjectBounds, 7, 18);
     OutputDebugStringW((L"[CG] Culling scene: Sponza + " +
@@ -2017,6 +2030,37 @@ void RenderingSystem::UpdateVisibleObjects(const BoundingFrustum& worldFrustum)
     else
     {
         SpatialCulling::CullLinear(mObjectBounds, worldFrustum, mVisibleObjects, mCullingStats);
+    }
+}
+
+void RenderingSystem::UpdateObjectLods()
+{
+    mVisibleRockLodCounts.fill(0);
+    for(uint32_t objectIndex = 1; objectIndex < static_cast<uint32_t>(mObjectBounds.size()); ++objectIndex)
+    {
+        UINT lod = 0;
+        if(mLodEnabled)
+        {
+            const BoundingBox& bounds = mObjectBounds[objectIndex];
+            const float dx = bounds.Center.x - mCameraPosition.x;
+            const float dy = bounds.Center.y - mCameraPosition.y;
+            const float dz = bounds.Center.z - mCameraPosition.z;
+            const float distanceSquared = dx * dx + dy * dy + dz * dz;
+            const float radiusSquared = std::max(
+                bounds.Extents.x * bounds.Extents.x +
+                bounds.Extents.y * bounds.Extents.y +
+                bounds.Extents.z * bounds.Extents.z, 0.0001f);
+            lod = distanceSquared < radiusSquared * 20.0f * 20.0f
+                ? 0
+                : (distanceSquared < radiusSquared * 45.0f * 45.0f ? 1 : 2);
+        }
+        mObjectLods[objectIndex] = static_cast<uint8_t>(lod);
+    }
+
+    for(const uint32_t objectIndex : mVisibleObjects)
+    {
+        if(objectIndex != 0)
+            ++mVisibleRockLodCounts[mObjectLods[objectIndex]];
     }
 }
 
@@ -2175,7 +2219,10 @@ void RenderingSystem::RenderShadows()
             const ObjectDraw& objectDraw = mObjectDraws[objectIndex];
             for(UINT subsetIndex = 0; subsetIndex < objectDraw.subsetCount; ++subsetIndex)
             {
-                const DrawSubset& subset = mDrawSubsets[objectDraw.firstSubset + subsetIndex];
+                const UINT drawSubsetIndex = objectIndex == 0
+                    ? objectDraw.firstSubset + subsetIndex
+                    : mRockSubsetIndex + mObjectLods[objectIndex];
+                const DrawSubset& subset = mDrawSubsets[drawSubsetIndex];
                 mCmdList->DrawIndexedInstanced(subset.indexCount, 1, subset.indexStart, 0, 0);
             }
         }
@@ -2323,6 +2370,10 @@ void RenderingSystem::UpdateWindowTitle(float totalTime)
     std::wstring title = L"CG2.7 | culling " + std::wstring(mode) +
         L" | visible " + std::to_wstring(mVisibleObjects.size()) + L"/" +
         std::to_wstring(mObjectBounds.size()) +
+        L" | LOD " + std::wstring(mLodEnabled ? L"on " : L"off ") +
+        std::to_wstring(mVisibleRockLodCounts[0]) + L"/" +
+        std::to_wstring(mVisibleRockLodCounts[1]) + L"/" +
+        std::to_wstring(mVisibleRockLodCounts[2]) +
         L" | tests " + std::to_wstring(mCullingStats.testedObjects) + L" obj";
     if(mOctreeCullingEnabled)
     {
@@ -2337,7 +2388,7 @@ void RenderingSystem::UpdateWindowTitle(float totalTime)
         ? L"vignette"
         : (mPostEffect == PostEffect::GaussianBlur ? L"blur 3x3" : L"off");
     title += L" | post " + std::wstring(postMode);
-    title += L" | 1/2/3 post | C/O culling | H shadows | N/P/F legacy";
+    title += L" | 1/2/3 post | C/O culling | L LOD | H shadows | N/P/F legacy";
     SetWindowTextW(mHwnd, title.c_str());
     mNextTitleUpdate = totalTime + 0.25f;
 }
@@ -2370,6 +2421,7 @@ void RenderingSystem::Update(float dt, float totalTime)
     const auto cullingEnd = std::chrono::steady_clock::now();
     mCullingMicroseconds = std::chrono::duration<float, std::micro>(
         cullingEnd - cullingStart).count();
+    UpdateObjectLods();
     UpdateObjectConstants(view * proj, mCameraPosition, totalTime);
     UpdateParticleConstants(view, view * proj, dt);
     UpdateWindowTitle(totalTime);
@@ -2444,8 +2496,10 @@ void RenderingSystem::Render(float r, float g, float b)
         const ObjectDraw& objectDraw = mObjectDraws[objectIndex];
         for(UINT localSubset = 0; localSubset < objectDraw.subsetCount; ++localSubset)
         {
-            const DrawSubset& subset =
-                mDrawSubsets[objectDraw.firstSubset + localSubset];
+            const UINT drawSubsetIndex = objectIndex == 0
+                ? objectDraw.firstSubset + localSubset
+                : mRockSubsetIndex + mObjectLods[objectIndex];
+            const DrawSubset& subset = mDrawSubsets[drawSubsetIndex];
             const UINT materialIndex = std::min(
                 subset.materialIndex, static_cast<UINT>(mMaterials.size() - 1));
             const Material& material = mMaterials[materialIndex];

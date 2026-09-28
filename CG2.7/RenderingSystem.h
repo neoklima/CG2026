@@ -67,6 +67,7 @@ public:
     void ToggleFrustumCulling();
     void ToggleOctreeCulling();
     void ToggleShadows() { mShadowsEnabled = !mShadowsEnabled; mNextTitleUpdate = 0.0f; }
+    void ToggleLod() { mLodEnabled = !mLodEnabled; mNextTitleUpdate = 0.0f; }
     void SetPostEffect(PostEffect effect) { mPostEffect = effect; mNextTitleUpdate = 0.0f; }
     void Render(float r, float g, float b);
 
@@ -74,6 +75,7 @@ private:
     static constexpr UINT MaxLights = 32;
     static constexpr UINT RockObjectCount = 600;
     static constexpr UINT SceneObjectCount = RockObjectCount + 1;
+    static constexpr UINT RockLodCount = 3;
     static constexpr UINT ShadowCascadeCount = 3;
     static constexpr UINT ShadowMapSize = 1024;
     static constexpr UINT ParticleCount = 128;
@@ -214,6 +216,7 @@ private:
     void RenderPostProcess();
 
     void UpdateVisibleObjects(const DirectX::BoundingFrustum& worldFrustum);
+    void UpdateObjectLods();
     void UpdateObjectConstants(
         const DirectX::XMMATRIX& viewProjection,
         const DirectX::XMFLOAT3& eyePosition,
@@ -331,6 +334,8 @@ private:
     std::vector<DirectX::BoundingBox> mObjectBounds;
     std::vector<ObjectDraw> mObjectDraws;
     std::vector<uint32_t> mVisibleObjects;
+    std::vector<uint8_t> mObjectLods;
+    std::array<UINT, RockLodCount> mVisibleRockLodCounts{};
     SpatialCulling::Octree mOctree;
     SpatialCulling::Stats mCullingStats{};
     std::unique_ptr<UploadBuffer<SceneCB>> mSceneCB;
@@ -361,5 +366,6 @@ private:
     bool mFrustumCullingEnabled = true;
     bool mOctreeCullingEnabled = true;
     bool mShadowsEnabled = true;
+    bool mLodEnabled = true;
     PostEffect mPostEffect = PostEffect::None;
 };
