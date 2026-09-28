@@ -1619,11 +1619,12 @@ void RenderingSystem::BuildShadersAndPSOs()
         const std::wstring& path,
         const char* entryPoint,
         const char* target,
-        ComPtr<ID3DBlob>& destination)
+        ComPtr<ID3DBlob>& destination,
+        const D3D_SHADER_MACRO* defines = nullptr)
     {
         ComPtr<ID3DBlob> errors;
         const HRESULT hr = D3DCompileFromFile(
-            path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            path.c_str(), defines, D3D_COMPILE_STANDARD_FILE_INCLUDE,
             entryPoint, target, flags, 0, &destination, &errors);
         if(FAILED(hr))
         {
@@ -1639,12 +1640,17 @@ void RenderingSystem::BuildShadersAndPSOs()
     const std::wstring shadowShader = FindAssetPath(L"ShadowDepth.hlsl");
     const std::wstring particleShader = FindAssetPath(L"Particles.hlsl");
     const std::wstring postShader = FindAssetPath(L"PostProcess.hlsl");
+    const std::string cascadeCount = std::to_string(NUM_CASCADES);
+    const D3D_SHADER_MACRO shadowDefines[] = {
+        {"NUM_CASCADES", cascadeCount.c_str()},
+        {nullptr, nullptr}
+    };
     compileShader(gbufferShader, "VSGeometry", "vs_5_0", mGeometryVS);
     compileShader(gbufferShader, "HSGeometry", "hs_5_0", mGeometryHS);
     compileShader(gbufferShader, "DSGeometry", "ds_5_0", mGeometryDS);
     compileShader(gbufferShader, "PSGeometry", "ps_5_0", mGeometryPS);
-    compileShader(lightingShader, "VSFullscreen", "vs_5_0", mFullscreenVS);
-    compileShader(lightingShader, "PSLighting", "ps_5_0", mLightingPS);
+    compileShader(lightingShader, "VSFullscreen", "vs_5_0", mFullscreenVS, shadowDefines);
+    compileShader(lightingShader, "PSLighting", "ps_5_0", mLightingPS, shadowDefines);
     compileShader(shadowShader, "VSShadow", "vs_5_0", mShadowVS);
     compileShader(particleShader, "CSUpdate", "cs_5_0", mParticleCS);
     compileShader(particleShader, "VSParticle", "vs_5_0", mParticleVS);
@@ -2123,7 +2129,7 @@ void RenderingSystem::UpdateShadows(const XMMATRIX& view)
     const XMMATRIX inverseView = XMMatrixInverse(nullptr, view);
     XMVECTOR lightDirection = XMVector3Normalize(XMLoadFloat3(&mLights.front().direction));
     float previousSplit = nearPlane;
-    float* splits = &mCascadeSplits.x;
+    float* splits = mCascadeSplits.data();
 
     for(UINT cascade = 0; cascade < ShadowCascadeCount; ++cascade)
     {
@@ -2406,7 +2412,9 @@ void RenderingSystem::UpdateWindowTitle(float totalTime)
     title += L" | " + std::to_wstring(framesPerSecond) + L" FPS";
     title += L" | cull " +
         std::to_wstring(static_cast<int>(std::round(mCullingMicroseconds))) + L" us";
-    title += L" | shadows " + std::wstring(mShadowsEnabled ? L"on" : L"off");
+    title += L" | shadows " + std::wstring(mShadowsEnabled ? L"on" : L"off") +
+        L" (" + std::to_wstring(ShadowCascadeCount) +
+        (ShadowCascadeCount == 1 ? L" cascade)" : L" cascades)");
     title += L" | particles " + std::to_wstring(FountainParticleCount) +
         L" + burst " + std::to_wstring(BurstParticleCount) +
         L" | clicks " + std::to_wstring(mBurstCount);

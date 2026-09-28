@@ -7,6 +7,8 @@
 #include "UploadBuffer.h"
 #include <deque>
 
+#define NUM_CASCADES 3
+
 class RenderingSystem
 {
 public:
@@ -78,7 +80,10 @@ private:
     static constexpr UINT RockObjectCount = 600;
     static constexpr UINT SceneObjectCount = RockObjectCount + 1;
     static constexpr UINT RockLodCount = 3;
-    static constexpr UINT ShadowCascadeCount = 3;
+    static constexpr UINT ShadowCascadeCount = NUM_CASCADES;
+    static constexpr UINT ShadowSplitVectorCount = (ShadowCascadeCount + 3) / 4;
+    static_assert(ShadowCascadeCount >= 1 && ShadowCascadeCount <= 16,
+        "NUM_CASCADES must be between 1 and 16");
     static constexpr UINT ShadowMapSize = 1024;
     static constexpr UINT FountainParticleCount = 128;
     static constexpr UINT BurstParticleCount = 128;
@@ -172,7 +177,7 @@ private:
         float padding;
         std::array<GpuLight, MaxLights> lights;
         std::array<DirectX::XMFLOAT4X4, ShadowCascadeCount> shadowViewProj;
-        DirectX::XMFLOAT4 cascadeSplits;
+        std::array<float, ShadowSplitVectorCount * 4> cascadeSplits;
         DirectX::XMFLOAT4 cameraForwardAndShadow;
     };
 
@@ -350,7 +355,7 @@ private:
     std::unique_ptr<UploadBuffer<ShadowCB>> mShadowCB;
     LightingCB mLightingData{};
     std::array<DirectX::XMFLOAT4X4, ShadowCascadeCount> mShadowViewProj{};
-    DirectX::XMFLOAT4 mCascadeSplits{};
+    std::array<float, ShadowSplitVectorCount * 4> mCascadeSplits{};
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, ShadowCascadeCount> mShadowDsvs{};
     std::array<ComPtr<ID3D12Resource>, 2> mParticleBuffers;
     std::array<ComPtr<ID3D12Resource>, 2> mParticleCounters;

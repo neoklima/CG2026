@@ -1,5 +1,5 @@
 #define MAX_LIGHTS 32
-#define SHADOW_CASCADES 3
+#define SHADOW_SPLIT_VECTORS ((NUM_CASCADES + 3) / 4)
 
 #define LIGHT_DIRECTIONAL 0
 #define LIGHT_POINT       1
@@ -27,8 +27,8 @@ cbuffer LightingCB : register(b0)
     float3 gBackgroundColor;
     float  _padding;
     Light  gLights[MAX_LIGHTS];
-    float4x4 gShadowViewProj[SHADOW_CASCADES];
-    float4 gCascadeSplits;
+    float4x4 gShadowViewProj[NUM_CASCADES];
+    float4 gCascadeSplits[SHADOW_SPLIT_VECTORS];
     float4 gCameraForwardAndShadow;
 };
 
@@ -64,8 +64,16 @@ float DirectionalShadow(float3 positionWorld)
         return 1.0f;
 
     const float cameraDepth = dot(positionWorld - gEyePosition, gCameraForwardAndShadow.xyz);
-    uint cascade = cameraDepth > gCascadeSplits.x ? 1u : 0u;
-    cascade = cameraDepth > gCascadeSplits.y ? 2u : cascade;
+    uint cascade = 0;
+#if NUM_CASCADES > 1
+    [unroll]
+    for(uint index = 0; index < NUM_CASCADES - 1; ++index)
+    {
+        const float split = gCascadeSplits[index / 4][index % 4];
+        if(cameraDepth > split)
+            cascade = index + 1;
+    }
+#endif
     const float4 lightPosition = mul(float4(positionWorld, 1.0f), gShadowViewProj[cascade]);
     const float3 projected = lightPosition.xyz / lightPosition.w;
     const float2 uv = float2(projected.x * 0.5f + 0.5f, 0.5f - projected.y * 0.5f);
