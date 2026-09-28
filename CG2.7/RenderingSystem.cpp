@@ -1336,9 +1336,19 @@ void RenderingSystem::BuildParticleResources()
     std::vector<Particle> initial(ParticleCount);
     for(UINT index = 0; index < ParticleCount; ++index)
     {
-        const float phase = static_cast<float>(index) / ParticleCount;
-        const float angle = phase * XM_2PI * 11.0f;
         Particle& particle = initial[index];
+        if(index >= FountainParticleCount)
+        {
+            particle.position = mParticleEmitter;
+            particle.age = 0.0f;
+            particle.lifetime = 0.0f;
+            particle.kind = 1;
+            continue;
+        }
+
+        const float phase = static_cast<float>(index) / FountainParticleCount;
+        const float angle = phase * XM_2PI * 11.0f;
+        particle.kind = 0;
         particle.lifetime = 1.7f + 0.7f * fmodf(index * 0.381f, 1.0f);
         particle.age = phase * particle.lifetime;
         particle.velocity = XMFLOAT3(cosf(angle) * 0.38f,
@@ -1986,6 +1996,11 @@ void RenderingSystem::SetLights(std::vector<Light> lights)
     mLights = std::move(lights);
 }
 
+void RenderingSystem::QueueParticleBurst(const XMFLOAT3& position)
+{
+    mPendingBursts.push_back(position);
+}
+
 void RenderingSystem::ToggleFrustumCulling()
 {
     mFrustumCullingEnabled = !mFrustumCullingEnabled;
@@ -2248,6 +2263,15 @@ void RenderingSystem::UpdateParticleConstants(
     constants.emitterAndDelta = XMFLOAT4(
         mParticleEmitter.x, mParticleEmitter.y, mParticleEmitter.z,
         std::clamp(dt, 0.0f, 0.05f));
+    if(!mPendingBursts.empty())
+    {
+        const XMFLOAT3 position = mPendingBursts.front();
+        mPendingBursts.pop_front();
+        constants.burstPositionAndActive = XMFLOAT4(
+            position.x, position.y, position.z, 1.0f);
+        ++mBurstCount;
+        mNextTitleUpdate = 0.0f;
+    }
     mParticleFrameCB->CopyData(0, constants);
 }
 
@@ -2383,7 +2407,9 @@ void RenderingSystem::UpdateWindowTitle(float totalTime)
     title += L" | cull " +
         std::to_wstring(static_cast<int>(std::round(mCullingMicroseconds))) + L" us";
     title += L" | shadows " + std::wstring(mShadowsEnabled ? L"on" : L"off");
-    title += L" | particles " + std::to_wstring(ParticleCount);
+    title += L" | particles " + std::to_wstring(FountainParticleCount) +
+        L" + burst " + std::to_wstring(BurstParticleCount) +
+        L" | clicks " + std::to_wstring(mBurstCount);
     const wchar_t* postMode = mPostEffect == PostEffect::Vignette
         ? L"vignette"
         : (mPostEffect == PostEffect::GaussianBlur ? L"blur 3x3" : L"off");

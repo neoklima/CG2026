@@ -103,11 +103,19 @@ LRESULT App::HandleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SetCapture(hwnd);
         mInput.OnMouseButtonDown(VK_LBUTTON, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         mLastMouse = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        mLeftButtonDown = mLastMouse;
+        mLeftButtonMoved = false;
         return 1;
 
     case WM_LBUTTONUP:
         ReleaseCapture();
         mInput.OnMouseButtonUp(VK_LBUTTON, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        if(!mLeftButtonMoved &&
+            std::abs(GET_X_LPARAM(lParam) - mLeftButtonDown.x) <= 4 &&
+            std::abs(GET_Y_LPARAM(lParam) - mLeftButtonDown.y) <= 4)
+        {
+            SpawnBurstAtClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        }
         return 1;
 
     case WM_RBUTTONDOWN:
@@ -126,6 +134,13 @@ LRESULT App::HandleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int x = GET_X_LPARAM(lParam);
         int y = GET_Y_LPARAM(lParam);
         mInput.OnMouseMove(x, y);
+
+        if((wParam & MK_LBUTTON) != 0 &&
+            (std::abs(x - mLeftButtonDown.x) > 4 ||
+             std::abs(y - mLeftButtonDown.y) > 4))
+        {
+            mLeftButtonMoved = true;
+        }
 
         if((wParam & (MK_LBUTTON | MK_RBUTTON)) != 0)
         {
@@ -198,4 +213,42 @@ void App::Draw()
     float b = 0.22f + 0.10f * sinf(t * 1.1f + 2.0f);
 
     mRenderer.Render(r, g, b);
+}
+
+void App::SpawnBurstAtClick(int x, int y)
+{
+    RECT client{};
+    GetClientRect(mWindow.Hwnd(), &client);
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    if(width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height)
+        return;
+
+    const float cosPitch = cosf(mCameraPitch);
+    const XMVECTOR forward = XMVector3Normalize(XMVectorSet(
+        sinf(mCameraYaw) * cosPitch, sinf(mCameraPitch),
+        cosf(mCameraYaw) * cosPitch, 0.0f));
+    const XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    const XMVECTOR right = XMVector3Normalize(XMVector3Cross(worldUp, forward));
+    const XMVECTOR up = XMVector3Cross(forward, right);
+    const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / width - 1.0f;
+    const float ndcY = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / height;
+    const float halfFovTangent = tanf(0.125f * XM_PI);
+    const float aspect = static_cast<float>(width) / height;
+    const XMVECTOR ray = XMVector3Normalize(forward +
+        right * (ndcX * aspect * halfFovTangent) +
+        up * (ndcY * halfFovTangent));
+
+    const float rayY = XMVectorGetY(ray);
+    float distance = 12.0f;
+    if(rayY < -0.0001f)
+    {
+        const float floorDistance = (-8.7f - mCameraPosition.y) / rayY;
+        if(floorDistance > 0.0f && floorDistance < 100.0f)
+            distance = floorDistance;
+    }
+
+    XMFLOAT3 position{};
+    XMStoreFloat3(&position, XMLoadFloat3(&mCameraPosition) + ray * distance);
+    mRenderer.QueueParticleBurst(position);
 }

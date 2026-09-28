@@ -5,6 +5,7 @@
 #include "GBuffer.h"
 #include "SpatialCulling.h"
 #include "UploadBuffer.h"
+#include <deque>
 
 class RenderingSystem
 {
@@ -69,6 +70,7 @@ public:
     void ToggleShadows() { mShadowsEnabled = !mShadowsEnabled; mNextTitleUpdate = 0.0f; }
     void ToggleLod() { mLodEnabled = !mLodEnabled; mNextTitleUpdate = 0.0f; }
     void SetPostEffect(PostEffect effect) { mPostEffect = effect; mNextTitleUpdate = 0.0f; }
+    void QueueParticleBurst(const DirectX::XMFLOAT3& position);
     void Render(float r, float g, float b);
 
 private:
@@ -78,7 +80,9 @@ private:
     static constexpr UINT RockLodCount = 3;
     static constexpr UINT ShadowCascadeCount = 3;
     static constexpr UINT ShadowMapSize = 1024;
-    static constexpr UINT ParticleCount = 128;
+    static constexpr UINT FountainParticleCount = 128;
+    static constexpr UINT BurstParticleCount = 128;
+    static constexpr UINT ParticleCount = FountainParticleCount + BurstParticleCount;
 
     struct Vertex
     {
@@ -183,6 +187,7 @@ private:
         float age;
         DirectX::XMFLOAT3 velocity;
         float lifetime;
+        uint32_t kind;
     };
 
     struct ParticleFrameCB
@@ -191,6 +196,7 @@ private:
         DirectX::XMFLOAT4 cameraRight;
         DirectX::XMFLOAT4 cameraUp;
         DirectX::XMFLOAT4 emitterAndDelta;
+        DirectX::XMFLOAT4 burstPositionAndActive;
     };
 
     void InitDevice();
@@ -353,6 +359,8 @@ private:
     std::unique_ptr<UploadBuffer<ParticleFrameCB>> mParticleFrameCB;
     ComPtr<ID3D12Resource> mParticleZeroUpload;
     UINT mParticleReadIndex = 0;
+    std::deque<DirectX::XMFLOAT3> mPendingBursts;
+    uint32_t mBurstCount = 0;
 
     DirectX::XMFLOAT3 mCameraPosition = {-9.0f, -4.0f, 0.0f};
     DirectX::XMFLOAT3 mCameraForward = {1.0f, 0.0f, 0.0f};

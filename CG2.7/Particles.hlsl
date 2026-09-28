@@ -4,6 +4,7 @@ struct Particle
     float age;
     float3 velocity;
     float lifetime;
+    uint kind;
 };
 
 cbuffer ParticleFrameCB : register(b0)
@@ -12,6 +13,7 @@ cbuffer ParticleFrameCB : register(b0)
     float4 gCameraRight;
     float4 gCameraUp;
     float4 gEmitterAndDelta;
+    float4 gBurstPositionAndActive;
 };
 
 ConsumeStructuredBuffer<Particle> gInputParticles : register(u0);
@@ -26,11 +28,43 @@ float Random01(float2 seed)
 [numthreads(64, 1, 1)]
 void CSUpdate(uint3 dispatchId : SV_DispatchThreadID)
 {
-    if(dispatchId.x >= 128)
+    if(dispatchId.x >= 256)
         return;
 
     Particle particle = gInputParticles.Consume();
     const float delta = min(gEmitterAndDelta.w, 0.05f);
+    if(particle.kind == 1)
+    {
+        if(gBurstPositionAndActive.w > 0.5f)
+        {
+            const float first = Random01(float2(dispatchId.x + 31.0f, gBurstPositionAndActive.x));
+            const float second = Random01(float2(dispatchId.x + 79.0f, gBurstPositionAndActive.z));
+            const float third = Random01(float2(dispatchId.x + 131.0f, gBurstPositionAndActive.y));
+            const float angle = first * 6.2831853f;
+            const float height = 0.15f + second * 0.85f;
+            const float radius = sqrt(1.0f - height * height);
+            const float speed = 3.5f + third * 2.0f;
+            particle.position = gBurstPositionAndActive.xyz;
+            particle.velocity = float3(cos(angle) * radius, height,
+                sin(angle) * radius) * speed;
+            particle.age = 0.0f;
+            particle.lifetime = 0.9f + third * 0.5f;
+        }
+        else if(particle.lifetime > 0.0f)
+        {
+            particle.age += delta;
+            if(particle.age >= particle.lifetime)
+                particle.lifetime = 0.0f;
+            else
+            {
+                particle.velocity.y -= 4.5f * delta;
+                particle.position += particle.velocity * delta;
+            }
+        }
+        gOutputParticles.Append(particle);
+        return;
+    }
+
     particle.age += delta;
     if(particle.age >= particle.lifetime)
     {
@@ -60,6 +94,7 @@ struct ParticlePoint
     float3 position : POSITION;
     float age : TEXCOORD0;
     float lifetime : TEXCOORD1;
+    uint kind : TEXCOORD2;
 };
 
 ParticlePoint VSParticle(uint vertexId : SV_VertexID)
@@ -69,6 +104,7 @@ ParticlePoint VSParticle(uint vertexId : SV_VertexID)
     output.position = particle.position;
     output.age = particle.age;
     output.lifetime = particle.lifetime;
+    output.kind = particle.kind;
     return output;
 }
 
@@ -82,14 +118,21 @@ struct BillboardVertex
 [maxvertexcount(4)]
 void GSParticle(point ParticlePoint input[1], inout TriangleStream<BillboardVertex> stream)
 {
+    if(input[0].lifetime <= 0.0f)
+        return;
+
     const float life = saturate(input[0].age / input[0].lifetime);
-    const float size = lerp(0.10f, 0.035f, life);
+    const float size = input[0].kind == 1
+        ? lerp(0.18f, 0.035f, life)
+        : lerp(0.10f, 0.035f, life);
     const float2 corners[4] = {
         float2(-1.0f, -1.0f), float2(-1.0f, 1.0f),
         float2(1.0f, -1.0f), float2(1.0f, 1.0f)
     };
     BillboardVertex output;
-    output.color = lerp(float3(1.0f, 0.82f, 0.22f), float3(1.0f, 0.28f, 0.04f), life);
+    output.color = input[0].kind == 1
+        ? lerp(float3(0.35f, 0.95f, 1.0f), float3(0.12f, 0.28f, 1.0f), life)
+        : lerp(float3(1.0f, 0.82f, 0.22f), float3(1.0f, 0.28f, 0.04f), life);
     for(uint index = 0; index < 4; ++index)
     {
         output.uv = corners[index];

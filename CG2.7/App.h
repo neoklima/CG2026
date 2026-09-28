@@ -18,6 +18,7 @@ private:
 
     void Update();
     void Draw();
+    void SpawnBurstAtClick(int x, int y);
 
 private:
     HINSTANCE mHinst = nullptr;
@@ -34,4 +35,6 @@ private:
     float mCameraPitch = 0.0f;
     float mMoveSpeed = 25.0f;
     POINT mLastMouse{0,0};
+    POINT mLeftButtonDown{0,0};
+    bool mLeftButtonMoved = false;
 };
