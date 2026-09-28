@@ -13,6 +13,12 @@ App::App(HINSTANCE hInst) : mHinst(hInst)
     mWindow.Create(hInst, wd, &App::HandleMsgThunk, this);
 
     mRenderer.Initialize(mWindow.Hwnd(), mWindow.Width(), mWindow.Height());
+
+    POINT cursor{};
+    if(GetCursorPos(&cursor) && ScreenToClient(mWindow.Hwnd(), &cursor))
+        mInput.OnMouseMove(cursor.x, cursor.y);
+    else
+        mInput.OnMouseMove(mWindow.Width() / 2, mWindow.Height() / 2);
 }
 
 int App::Run()
@@ -84,6 +90,7 @@ LRESULT App::HandleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if(wParam == '1') mRenderer.SetPostEffect(RenderingSystem::PostEffect::None);
             if(wParam == '2') mRenderer.SetPostEffect(RenderingSystem::PostEffect::Vignette);
             if(wParam == '3') mRenderer.SetPostEffect(RenderingSystem::PostEffect::GaussianBlur);
+            if(wParam == '4') mRenderer.SetPostEffect(RenderingSystem::PostEffect::Fisheye);
             if(wParam == 'R')
             {
                 mCameraPosition = XMFLOAT3(-9.0f, -4.0f, 0.0f);
@@ -202,6 +209,7 @@ void App::Update()
     XMFLOAT3 forwardValue{};
     XMStoreFloat3(&forwardValue, forward);
     mRenderer.SetCamera(mCameraPosition, forwardValue);
+    mRenderer.SetMousePosition(mInput.MousePos());
     mRenderer.Update(dt, t);
 }
 

@@ -31,7 +31,8 @@ public:
     {
         None = 0,
         Vignette = 1,
-        GaussianBlur = 2
+        GaussianBlur = 2,
+        Fisheye = 3
     };
 
     struct Light
@@ -72,6 +73,7 @@ public:
     void ToggleShadows() { mShadowsEnabled = !mShadowsEnabled; mNextTitleUpdate = 0.0f; }
     void ToggleLod() { mLodEnabled = !mLodEnabled; mNextTitleUpdate = 0.0f; }
     void SetPostEffect(PostEffect effect) { mPostEffect = effect; mNextTitleUpdate = 0.0f; }
+    void SetMousePosition(POINT position) { mMousePosition = position; }
     void QueueParticleBurst(const DirectX::XMFLOAT3& position);
     void Render(float r, float g, float b);
 
@@ -308,6 +310,7 @@ private:
     ComPtr<ID3D12PipelineState> mPostCopyPSO;
     ComPtr<ID3D12PipelineState> mPostVignettePSO;
     ComPtr<ID3D12PipelineState> mPostBlurPSO;
+    ComPtr<ID3D12PipelineState> mPostFisheyePSO;
     ComPtr<ID3DBlob> mGeometryVS;
     ComPtr<ID3DBlob> mGeometryHS;
     ComPtr<ID3DBlob> mGeometryDS;
@@ -323,6 +326,7 @@ private:
     ComPtr<ID3DBlob> mPostCopyPS;
     ComPtr<ID3DBlob> mPostVignettePS;
     ComPtr<ID3DBlob> mPostBlurPS;
+    ComPtr<ID3DBlob> mPostFisheyePS;
 
     ComPtr<ID3D12Resource> mVB;
     ComPtr<ID3D12Resource> mIB;
@@ -381,4 +385,5 @@ private:
     bool mShadowsEnabled = true;
     bool mLodEnabled = true;
     PostEffect mPostEffect = PostEffect::None;
+    POINT mMousePosition{0, 0};
 };

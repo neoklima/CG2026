@@ -1583,11 +1583,15 @@ void RenderingSystem::BuildRootSignatures()
     postRange.NumDescriptors = 1;
     postRange.BaseShaderRegister = 0;
     postRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_ROOT_PARAMETER postParam{};
-    postParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    postParam.DescriptorTable.NumDescriptorRanges = 1;
-    postParam.DescriptorTable.pDescriptorRanges = &postRange;
-    postParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_ROOT_PARAMETER postParams[2]{};
+    postParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    postParams[0].DescriptorTable.NumDescriptorRanges = 1;
+    postParams[0].DescriptorTable.pDescriptorRanges = &postRange;
+    postParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    postParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    postParams[1].Constants.ShaderRegister = 0;
+    postParams[1].Constants.Num32BitValues = 4;
+    postParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_STATIC_SAMPLER_DESC postSampler{};
     postSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     postSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -1599,8 +1603,8 @@ void RenderingSystem::BuildRootSignatures()
     postSampler.ShaderRegister = 0;
     postSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_ROOT_SIGNATURE_DESC postDesc{};
-    postDesc.NumParameters = 1;
-    postDesc.pParameters = &postParam;
+    postDesc.NumParameters = _countof(postParams);
+    postDesc.pParameters = postParams;
     postDesc.NumStaticSamplers = 1;
     postDesc.pStaticSamplers = &postSampler;
     postDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -1660,6 +1664,7 @@ void RenderingSystem::BuildShadersAndPSOs()
     compileShader(postShader, "PSCopy", "ps_5_0", mPostCopyPS);
     compileShader(postShader, "PSVignette", "ps_5_0", mPostVignettePS);
     compileShader(postShader, "PSGaussianBlur3x3", "ps_5_0", mPostBlurPS);
+    compileShader(postShader, "PSFisheye", "ps_5_0", mPostFisheyePS);
 
     D3D12_BLEND_DESC blend{};
     blend.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
@@ -1798,6 +1803,9 @@ void RenderingSystem::BuildShadersAndPSOs()
     postPso.PS = {mPostBlurPS->GetBufferPointer(), mPostBlurPS->GetBufferSize()};
     ThrowIfFailed(mDevice->CreateGraphicsPipelineState(
         &postPso, IID_PPV_ARGS(&mPostBlurPSO)));
+    postPso.PS = {mPostFisheyePS->GetBufferPointer(), mPostFisheyePS->GetBufferSize()};
+    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(
+        &postPso, IID_PPV_ARGS(&mPostFisheyePSO)));
 
 }
 
@@ -2370,9 +2378,17 @@ void RenderingSystem::RenderPostProcess()
         postPipeline = mPostVignettePSO.Get();
     else if(mPostEffect == PostEffect::GaussianBlur)
         postPipeline = mPostBlurPSO.Get();
+    else if(mPostEffect == PostEffect::Fisheye)
+        postPipeline = mPostFisheyePSO.Get();
     mCmdList->SetPipelineState(postPipeline);
     mCmdList->SetGraphicsRootSignature(mPostRootSig.Get());
     mCmdList->SetGraphicsRootDescriptorTable(0, mSceneColorSrv);
+    const XMFLOAT4 lensConstants(
+        (static_cast<float>(mMousePosition.x) + 0.5f) / mWidth,
+        (static_cast<float>(mMousePosition.y) + 0.5f) / mHeight,
+        static_cast<float>(mWidth) / mHeight,
+        0.28f);
+    mCmdList->SetGraphicsRoot32BitConstants(1, 4, &lensConstants, 0);
     mCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCmdList->IASetVertexBuffers(0, 0, nullptr);
     mCmdList->IASetIndexBuffer(nullptr);
@@ -2420,9 +2436,10 @@ void RenderingSystem::UpdateWindowTitle(float totalTime)
         L" | clicks " + std::to_wstring(mBurstCount);
     const wchar_t* postMode = mPostEffect == PostEffect::Vignette
         ? L"vignette"
-        : (mPostEffect == PostEffect::GaussianBlur ? L"blur 3x3" : L"off");
+        : (mPostEffect == PostEffect::GaussianBlur ? L"blur 3x3"
+            : (mPostEffect == PostEffect::Fisheye ? L"fisheye" : L"off"));
     title += L" | post " + std::wstring(postMode);
-    title += L" | 1/2/3 post | C/O culling | L LOD | H shadows | N/P/F legacy";
+    title += L" | 1/2/3/4 post | C/O culling | L LOD | H shadows | N/P/F legacy";
     SetWindowTextW(mHwnd, title.c_str());
     mNextTitleUpdate = totalTime + 0.25f;
 }
